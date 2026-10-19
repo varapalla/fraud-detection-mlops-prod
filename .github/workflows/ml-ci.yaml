@@ -1,91 +1,180 @@
 
-name: Fraud Detection MLOps CI
+name: Fraud Detection MLOps CI/CD
 
 on:
-  push:
-    branches:
-      - main
-      - develop
-    paths:
-      - "src/**"
-      - "requirements.txt"
-      - ".github/workflows/mlops-ci.yml"
   pull_request:
     branches:
       - main
-      - develop
-    paths:
-      - "src/**"
-      - "requirements.txt"
-      - ".github/workflows/mlops-ci.yml"
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: fraud-detection-ci-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  PYTHON_VERSION: "3.12"
+  MIN_PRECISION: "0.50"
+  MIN_RECALL: "0.70"
+  MIN_ROC_AUC: "0.80"
 
 jobs:
-  train-and-validate:
-    name: Train and Validate Model
+  validate:
+    name: Code, Tests, Model Quality and SAST
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    env:
-      PYTHON_VERSION: "3.12"
-      MIN_PRECISION: "0.50"
-      MIN_RECALL: "0.70"
-      MIN_ROC_AUC: "0.80"
-      PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
-      - name: Verify Python environment
-        run: |
-          python --version
-          python -m pip check
+      # Code quality
+      - name: Python lint
+        run: ruff check src tests
 
+      - name: Unit tests
+        run: pytest -v
+
+      # Model training and quality gates
       - name: Train fraud detection model
         run: python src/train.py
 
-      - name: Inspect generated artifacts
-        if: always()
-        run: |
-          if [ -d artifacts ]; then
-            ls -lh artifacts/
-            if [ -f artifacts/metrics.json ]; then
-              cat artifacts/metrics.json
-            else
-              echo "metrics.json was not generated"
-            fi
-          else
-            echo "Artifacts directory was not generated"
-          fi
-
-      - name: Validate model and quality gates
+      - name: Validate model artifact and quality
         run: python src/validate_model.py
 
-      - name: Upload model and evaluation artifacts
-        if: always()
+      # Dependency security
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements-dev.txt
+
+      # Snyk Open Source
+      - name: Snyk Open Source - dependency scan
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+        uses: snyk/actions/python-3.12@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      # Snyk Code
+      - name: Set up Snyk CLI
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+        uses: snyk/actions/setup@master
+
+      - name: Snyk Code - static application security testing
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+        run: snyk code test --severity-threshold=high
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      # Preserve model artifacts for inspection
+      - name: Upload model artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: fraud-detection-model-${{ github.run_id }}
+          name: model-artifacts-${{ github.sha }}
           path: artifacts/
-          if-no-files-found: warn
-          retention-days: 14
+          if-no-files-found: error
+          retention-days: 7
+
+  container:
+    name: Build, Scan and Publish Container
+    needs: validate
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # The Dockerfile copies artifacts/, which is gitignored.
+      # Regenerate them in this job before building the image.
+      - name: Generate model artifact
+        run: |
+          python src/train.py
+          python src/validate_model.py
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t fraud-detection-mlops-prod:${GITHUB_SHA} .
+
+      # Snyk Container
+      - name: Snyk Container - image vulnerability scan
+        if: ${{ secrets.SNYK_TOKEN != '' }}
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: fraud-detection-mlops-prod:${{ github.sha }}
+          args: --severity-threshold=high --file=Dockerfile
+
+      # Trivy Container
+      - name: Trivy - image vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fraud-detection-mlops-prod:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Require Snyk credentials before publishing from main.
+      - name: Verify Snyk configuration for main
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "::error::Configure the SNYK_TOKEN repository secret before publishing."
+            exit 1
+          fi
+
+      - name: Log in to GitHub Container Registry
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Docker image
+        if: >-
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        env:
+          IMAGE_NAME: ${{ github.repository }}
+        run: |
+          IMAGE="ghcr.io/${IMAGE_NAME,,}:${GITHUB_SHA}"
+          docker tag \
+            "fraud-detection-mlops-prod:${GITHUB_SHA}" \
+            "$IMAGE"
+          docker push "$IMAGE"
+          echo "Published image: $IMAGE"
