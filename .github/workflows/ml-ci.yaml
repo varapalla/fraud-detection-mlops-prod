@@ -19,11 +19,13 @@ env:
 
 jobs:
   validate:
-    name: Code, Tests, Model Quality and SAST
+    name: Code, Tests, Model Quality and Security
     runs-on: ubuntu-latest
 
+    # Do not expose the secret to every step.
+    # This boolean allows scans to be skipped on fork PRs without secrets.
     env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      SNYK_ENABLED: ${{ secrets.SNYK_TOKEN != '' }}
 
     steps:
       - name: Checkout source
@@ -56,18 +58,24 @@ jobs:
       - name: Audit Python dependencies
         run: pip-audit -r requirements-dev.txt
 
-      - name: Snyk Open Source - dependency scan
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: snyk/actions/python-3.12@master
-        with:
-          args: --severity-threshold=high
-
       - name: Set up Snyk CLI
-        if: ${{ env.SNYK_TOKEN != '' }}
+        if: ${{ env.SNYK_ENABLED == 'true' }}
         uses: snyk/actions/setup@master
 
+      - name: Snyk Open Source - dependency scan
+        if: ${{ env.SNYK_ENABLED == 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk test \
+            --file=requirements-dev.txt \
+            --package-manager=pip \
+            --severity-threshold=high
+
       - name: Snyk Code - static application security testing
-        if: ${{ env.SNYK_TOKEN != '' }}
+        if: ${{ env.SNYK_ENABLED == 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk code test --severity-threshold=high
 
       - name: Upload model artifacts
@@ -88,7 +96,7 @@ jobs:
       packages: write
 
     env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      SNYK_ENABLED: ${{ secrets.SNYK_TOKEN != '' }}
 
     steps:
       - name: Checkout source
@@ -104,7 +112,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # artifacts/ is gitignored, so generate it in this job.
+      # artifacts/ is gitignored; generate it before building the image.
       - name: Generate model artifact
         run: |
           python src/train.py
@@ -116,11 +124,14 @@ jobs:
             -t fraud-detection-mlops-prod:${GITHUB_SHA} .
 
       - name: Snyk Container - image vulnerability scan
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: snyk/actions/docker@master
-        with:
-          image: fraud-detection-mlops-prod:${{ github.sha }}
-          args: --severity-threshold=high --file=Dockerfile
+        if: ${{ env.SNYK_ENABLED == 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk container test \
+            fraud-detection-mlops-prod:${GITHUB_SHA} \
+            --file=Dockerfile \
+            --severity-threshold=high
 
       - name: Trivy - image vulnerability scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -131,14 +142,16 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
-      # Do not publish if Snyk is not configured.
+      # Publishing from main requires Snyk to be configured.
       - name: Verify Snyk configuration for main
         if: >-
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           if [ -z "$SNYK_TOKEN" ]; then
-            echo "::error::Configure the SNYK_TOKEN repository secret before publishing."
+            echo "::error::Configure SNYK_TOKEN before publishing."
             exit 1
           fi
 
