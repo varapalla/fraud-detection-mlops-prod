@@ -1,0 +1,3 @@
+.venv/
+artifacts/
+tests/__pycache__/
