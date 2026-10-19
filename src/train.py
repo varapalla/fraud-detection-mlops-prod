@@ -17,14 +17,13 @@ from sklearn.preprocessing import StandardScaler
 
 OUTPUT = Path("artifacts")
 
-MIN_PRECISION = 0.50
 MIN_RECALL = 0.70
 
 
 def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
 
-    # Generate a reproducible, synthetic imbalanced dataset.
+    # Generate reproducible synthetic, imbalanced fraud data.
     X, y = make_classification(
         n_samples=3000,
         n_features=20,
@@ -35,7 +34,7 @@ def main():
         random_state=42,
     )
 
-    # Split into training (60%), validation (20%), and test (20%).
+    # Split: 60% training, 20% validation, 20% test.
     X_train, X_temp, y_train, y_temp = train_test_split(
         X,
         y,
@@ -43,6 +42,7 @@ def main():
         stratify=y,
         random_state=42,
     )
+
     X_val, X_test, y_val, y_test = train_test_split(
         X_temp,
         y_temp,
@@ -51,7 +51,7 @@ def main():
         random_state=42,
     )
 
-    # Train the model only on the training dataset.
+    # Train only on the training partition.
     model = make_pipeline(
         StandardScaler(),
         LogisticRegression(
@@ -62,7 +62,7 @@ def main():
     )
     model.fit(X_train, y_train)
 
-    # Tune the classification threshold using validation data only.
+    # Select a threshold on validation data only.
     val_probabilities = model.predict_proba(X_val)[:, 1]
     candidates = np.arange(0.05, 0.96, 0.01)
 
@@ -71,16 +71,18 @@ def main():
     best_recall = 0.0
 
     for threshold in candidates:
-        val_predictions = (val_probabilities >= threshold).astype(int)
+        predictions = (
+            val_probabilities >= threshold
+        ).astype(int)
 
         precision = precision_score(
-            y_val, val_predictions, zero_division=0
+            y_val, predictions, zero_division=0
         )
         recall = recall_score(
-            y_val, val_predictions, zero_division=0
+            y_val, predictions, zero_division=0
         )
 
-        # Choose the highest precision among thresholds meeting recall.
+        # Maximize precision while satisfying minimum recall.
         if recall >= MIN_RECALL and precision > best_precision:
             best_threshold = float(threshold)
             best_precision = float(precision)
@@ -88,28 +90,36 @@ def main():
 
     if best_threshold is None:
         raise SystemExit(
-            "No validation threshold met the minimum recall requirement. "
-            "Review the model or quality requirements."
+            "FAIL: no threshold satisfies minimum validation "
+            f"recall of {MIN_RECALL:.2f}"
         )
 
     print(
-        f"Selected threshold: {best_threshold:.2f}; "
-        f"validation precision: {best_precision:.4f}; "
-        f"validation recall: {best_recall:.4f}"
+        f"Selected threshold: {best_threshold:.2f}\n"
+        f"Validation precision: {best_precision:.4f}\n"
+        f"Validation recall: {best_recall:.4f}"
     )
 
-    # Evaluate exactly once on the held-out test dataset.
+    # Evaluate once on the held-out test set.
     test_probabilities = model.predict_proba(X_test)[:, 1]
-    test_predictions = (test_probabilities >= best_threshold).astype(int)
+    test_predictions = (
+        test_probabilities >= best_threshold
+    ).astype(int)
 
     metrics = {
         "precision": float(
-            precision_score(y_test, test_predictions, zero_division=0)
+            precision_score(
+                y_test, test_predictions, zero_division=0
+            )
         ),
         "recall": float(
-            recall_score(y_test, test_predictions, zero_division=0)
+            recall_score(
+                y_test, test_predictions, zero_division=0
+            )
         ),
-        "roc_auc": float(roc_auc_score(y_test, test_probabilities)),
+        "roc_auc": float(
+            roc_auc_score(y_test, test_probabilities)
+        ),
         "validation_precision": best_precision,
         "validation_recall": best_recall,
         "threshold": best_threshold,
@@ -117,15 +127,20 @@ def main():
         "dataset": "synthetic-fraud-data",
     }
 
-    # Save the model and its decision threshold together.
+    # Save the model and its selected threshold together.
     joblib.dump(
-        {"model": model, "threshold": best_threshold},
+        {
+            "model": model,
+            "threshold": best_threshold,
+        },
         OUTPUT / "model.joblib",
     )
+
     (OUTPUT / "metrics.json").write_text(
-        json.dumps(metrics, indent=2) + "\n"
+        json.dumps(metrics, indent=2, allow_nan=False) + "\n"
     )
 
+    print("\nTest evaluation metrics:")
     print(json.dumps(metrics, indent=2))
 
 
