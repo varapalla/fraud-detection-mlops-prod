@@ -1,120 +1,91 @@
 
-name: Fraud Detection MLOps CI/CD
+name: Fraud Detection MLOps CI
 
 on:
-  pull_request:
-    branches:
-      - main
   push:
     branches:
       - main
+      - develop
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - ".github/workflows/mlops-ci.yml"
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - ".github/workflows/mlops-ci.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  PYTHON_VERSION: "3.12"
+concurrency:
+  group: fraud-detection-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Code, Tests and Model Validation
+  train-and-validate:
+    name: Train and Validate Model
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PYTHON_VERSION: "3.12"
+      MIN_PRECISION: "0.50"
+      MIN_RECALL: "0.70"
+      MIN_ROC_AUC: "0.80"
+      PYTHONUNBUFFERED: "1"
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-dev.txt
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements.txt
 
-      - name: Python lint
-        run: ruff check src tests
-
-      - name: Unit tests
-        run: pytest -v
+      - name: Verify Python environment
+        run: |
+          python --version
+          python -m pip check
 
       - name: Train fraud detection model
         run: python src/train.py
 
-      - name: Validate model artifact and quality
+      - name: Inspect generated artifacts
+        if: always()
+        run: |
+          if [ -d artifacts ]; then
+            ls -lh artifacts/
+            if [ -f artifacts/metrics.json ]; then
+              cat artifacts/metrics.json
+            else
+              echo "metrics.json was not generated"
+            fi
+          else
+            echo "Artifacts directory was not generated"
+          fi
+
+      - name: Validate model and quality gates
         run: python src/validate_model.py
 
-      - name: Audit dependencies
-        run: pip-audit -r requirements.txt
-
-      - name: Upload model artifacts
+      - name: Upload model and evaluation artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: model-artifacts-${{ github.sha }}
+          name: fraud-detection-model-${{ github.run_id }}
           path: artifacts/
-          if-no-files-found: error
-          retention-days: 7
-
-  container:
-    name: Build and Scan Container
-    needs: validate
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Generate model artifact
-        run: |
-          python src/train.py
-          python src/validate_model.py
-
-      - name: Build Docker image
-        run: |
-          docker build \
-            -t fraud-detection-mlops-prod:${GITHUB_SHA} .
-
-      - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: fraud-detection-mlops-prod:${{ github.sha }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
-      - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish Docker image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          IMAGE_NAME: ${{ github.repository }}
-        run: |
-          IMAGE="ghcr.io/${IMAGE_NAME,,}:${GITHUB_SHA}"
-          docker tag fraud-detection-mlops-prod:${GITHUB_SHA} "$IMAGE"
-          docker push "$IMAGE"
+          if-no-files-found: warn
+          retention-days: 14

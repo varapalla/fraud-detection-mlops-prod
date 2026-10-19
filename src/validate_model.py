@@ -1,40 +1,100 @@
+
 import json
 import os
+import sys
 from pathlib import Path
 
 import joblib
 
 ARTIFACTS = Path("artifacts")
+REQUIRED_METRICS = ("precision", "recall", "roc_auc")
 
 
-def main():
+def load_threshold(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        raise SystemExit(f"FAIL: invalid threshold configuration: {name}")
+
+    if not 0 <= value <= 1:
+        raise SystemExit(f"FAIL: threshold must be between 0 and 1: {name}")
+
+    return value
+
+
+def main() -> None:
     model_path = ARTIFACTS / "model.joblib"
     metrics_path = ARTIFACTS / "metrics.json"
+
+    # 1. Validate artifacts
     if not model_path.is_file() or model_path.stat().st_size == 0:
         raise SystemExit("FAIL: model artifact is missing or empty")
+
     if not metrics_path.is_file():
         raise SystemExit("FAIL: metrics.json is missing")
 
-    metrics = json.loads(metrics_path.read_text())
-    for name in ("precision", "recall", "roc_auc"):
-        value = metrics.get(name)
-        if not isinstance(value, (int, float)) or not 0 <= value <= 1:
-            raise SystemExit(f"FAIL: invalid metric: {name}")
+    # 2. Load and validate metrics
+    try:
+        metrics = json.loads(metrics_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise SystemExit(f"FAIL: cannot read metrics.json: {exc}")
 
+    if not isinstance(metrics, dict):
+        raise SystemExit("FAIL: metrics.json must contain a JSON object")
+
+    errors = []
+
+    for name in REQUIRED_METRICS:
+        value = metrics.get(name)
+
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0 <= value <= 1
+        ):
+            errors.append(f"Invalid or missing metric: {name}")
+
+    if errors:
+        raise SystemExit("FAIL: " + "; ".join(errors))
+
+    # 3. Enforce configurable quality gates
     thresholds = {
-        "precision": float(os.getenv("MIN_PRECISION", "0.50")),
-        "recall": float(os.getenv("MIN_RECALL", "0.70")),
-        "roc_auc": float(os.getenv("MIN_ROC_AUC", "0.80")),
+        "precision": load_threshold("MIN_PRECISION", 0.50),
+        "recall": load_threshold("MIN_RECALL", 0.70),
+        "roc_auc": load_threshold("MIN_ROC_AUC", 0.80),
     }
+
+    failures = []
+
+    print("Model quality gate report")
+    print("-" * 45)
+
     for name, minimum in thresholds.items():
         actual = metrics[name]
-        print(f"{name}: {actual:.4f} (minimum {minimum:.4f})")
-        if actual < minimum:
-            raise SystemExit(f"FAIL: {name} quality gate failed")
+        status = "PASS" if actual >= minimum else "FAIL"
 
-    model = joblib.load(model_path)
-    if not hasattr(model, "predict"):
+        print(
+            f"{name}: {actual:.4f} "
+            f"(minimum {minimum:.4f}) [{status}]"
+        )
+
+        if actual < minimum:
+            failures.append(name)
+
+    if failures:
+        raise SystemExit(
+            "FAIL: quality gates not met: " + ", ".join(failures)
+        )
+
+    # 4. Validate model artifact
+    try:
+        model = joblib.load(model_path)
+    except Exception as exc:
+        raise SystemExit(f"FAIL: cannot load model artifact: {exc}")
+
+    if not callable(getattr(model, "predict", None)):
         raise SystemExit("FAIL: artifact is not a prediction model")
+
     print("PASS: model artifact and quality gates validated")
 
 
