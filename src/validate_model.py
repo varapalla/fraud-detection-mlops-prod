@@ -54,6 +54,11 @@ def main():
         if actual < minimum:
             failed.append(name)
 
+    if failed:
+        raise SystemExit(
+            "FAIL: quality gates not met: " + ", ".join(failed)
+        )
+
     try:
         artifact = joblib.load(model_path)
 
@@ -79,10 +84,7 @@ def main():
     except Exception as exc:
         raise SystemExit(f"FAIL: invalid model artifact: {exc}") from exc
 
-    if failed:
-        raise SystemExit(
-            "FAIL: quality gates not met: " + ", ".join(failed)
-        )
+
 
     print("PASS: model artifact and quality gates validated")
 
