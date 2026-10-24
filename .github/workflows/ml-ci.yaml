@@ -144,14 +144,14 @@ jobs:
             --severity-threshold=high
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: image
           image-ref: fraud-detection-mlops-prod:${{ github.sha }}
           format: table
           exit-code: '1'
           ignore-unfixed: true
-          severity: CRITICAL,HIGH
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
 
       # Publishing from main requires Snyk to be configured.
       - name: Verify Snyk configuration for main
