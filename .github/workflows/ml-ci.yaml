@@ -133,6 +133,10 @@ jobs:
           docker build \
             -t fraud-detection-mlops-prod:${GITHUB_SHA} .
 
+      - name: Set up Snyk CLI
+        if: ${{ env.SNYK_ENABLED == 'true' }}
+        uses: snyk/actions/setup@master
+
       - name: Snyk Container - image vulnerability scan
         if: ${{ env.SNYK_ENABLED == 'true' }}
         env:
