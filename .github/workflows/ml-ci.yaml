@@ -143,14 +143,15 @@ jobs:
             --file=Dockerfile \
             --severity-threshold=high
 
-      - name: Trivy - image vulnerability scan
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: fraud-detection-mlops-prod:${{ github.sha }}
+          scan-type: fs
+          scan-ref: .
           format: table
-          severity: HIGH,CRITICAL
+          exit-code: '1'
           ignore-unfixed: true
-          exit-code: "1"
+          severity: CRITICAL,HIGH
 
       # Publishing from main requires Snyk to be configured.
       - name: Verify Snyk configuration for main
