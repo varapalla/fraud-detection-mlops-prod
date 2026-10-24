@@ -145,8 +145,9 @@ jobs:
           snyk container test \
             fraud-detection-mlops-prod:${GITHUB_SHA} \
             --file=Dockerfile \
-            --severity-threshold=high
+            --severity-threshold=high \
             --exclude-base-image-vulns
+
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0

@@ -7,6 +7,7 @@
     <list default="true" id="b1384cf9-f317-4303-91f9-c18717d7a7c6" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.github/workflows/ml-ci.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/.github/workflows/ml-ci.yaml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/Dockerfile" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
